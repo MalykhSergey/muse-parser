@@ -1,0 +1,14 @@
+[package]
+name = "parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "sync", "fs"] }
+quick-xml = { version = "0.38.1", features = ["async-tokio"] }
+bytes = "1.10.1"
+postgres-types = { version = "0.2.9", features = ["derive"] }
+tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3.31"
+anyhow = "1.0.99"
