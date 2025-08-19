@@ -28,14 +28,26 @@ mod vote;
 async fn main() -> Result<()> {
     let start_time = Instant::now();
     let args: Vec<String> = env::args().collect();
-    let input_dir = args.get(1).expect("Pass directory to dump");
-    let db_connection_string = args.get(2).expect("Pass connection string. Example: host=127.0.0.1 port=5432 user=spring password=boot dbname=muse");
 
-    let (pg_client, connection) = tokio_postgres::connect(
-        &db_connection_string,
-        NoTls,
-    )
-    .await?;
+    if args.len() < 3 {
+        eprintln!(
+            "Usage: {} <input_dir> <connection_string> [files...]",
+            args[0]
+        );
+        eprintln!(
+            "Example: {} ./dump 'host=localhost user=postgres' Users Posts",
+            args[0]
+        );
+        std::process::exit(1);
+    }
+
+    let input_dir = &args[1];
+    let db_connection_string = &args[2];
+    let files_to_parse: Vec<&str> = args.iter().skip(3).map(|s| s.as_str()).collect();
+
+    let parse_all = files_to_parse.is_empty();
+
+    let (pg_client, connection) = tokio_postgres::connect(db_connection_string, NoTls).await?;
 
     tokio::spawn(async move {
         if let Err(e) = connection.await {
@@ -43,47 +55,30 @@ async fn main() -> Result<()> {
         }
     });
 
-    // создаём канал для передачи элементов
     let (tx, mut rx) = mpsc::channel::<Item>(100_000);
 
-    // DB worker: принимает items и вставляет батчами
     let db_client = pg_client;
     let db_handle = tokio::spawn(async move {
         if let Err(e) = db_worker(db_client, &mut rx).await {
             eprintln!("DB worker error: {:?}", e);
         }
     });
+    type ParserFn = for<'a> fn(HashMap<String, String>, &'a mpsc::Sender<Item>) -> Result<()>;
 
-    parse_xml_and_send(
-        PathBuf::from(format!("{}/Users.xml", input_dir)),
-        tx.clone(),
-        parse_users,
-    )
-    .await?;
-    parse_xml_and_send(
-        PathBuf::from(format!("{}/Tags.xml", input_dir)),
-        tx.clone(),
-        parse_tags,
-    )
-    .await?;
-    parse_xml_and_send(
-        PathBuf::from(format!("{}/Posts.xml", input_dir)),
-        tx.clone(),
-        parse_posts,
-    )
-    .await?;
-    parse_xml_and_send(
-        PathBuf::from(format!("{}/Comments.xml", input_dir)),
-        tx.clone(),
-        parse_comments,
-    )
-    .await?;
-    parse_xml_and_send(
-        PathBuf::from(format!("{}/Votes.xml", input_dir)),
-        tx.clone(),
-        parse_votes,
-    )
-    .await?;
+    let file_parsers: Vec<(&str, ParserFn)> = vec![
+        ("Users", user::parse_users as ParserFn),
+        ("Tags", tag::parse_tags as ParserFn),
+        ("Posts", post::parse_posts as ParserFn),
+        ("Comments", comment::parse_comments as ParserFn),
+        ("Votes", vote::parse_votes as ParserFn),
+    ];
+
+    for (file_name, parser) in file_parsers {
+        if parse_all || files_to_parse.contains(&file_name) {
+            let file_path = PathBuf::from(format!("{}/{}.xml", input_dir, file_name));
+            parse_xml_and_send(file_path, tx.clone(), parser).await?;
+        }
+    }
 
     drop(tx);
     db_handle.await?;
